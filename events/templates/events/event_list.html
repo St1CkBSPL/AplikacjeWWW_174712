@@ -1,0 +1,49 @@
+{% extends 'events/base.html' %}
+
+{% block title %}Aktualne Wydarzenia – EventHub{% endblock %}
+
+{% block content %}
+    <section class="page-header">
+        <h2>
+            {% if current_category %}
+                Wydarzenia: {{ current_category.name }}
+            {% else %}
+                Nadchodzące wydarzenia
+            {% endif %}
+        </h2>
+        <p>Przeglądaj najnowsze konferencje, warsztaty i spotkania branżowe.</p>
+    </section>
+
+    <nav class="category-menu" aria-label="Kategorie wydarzeń">
+        <a href="{% url 'events:event-list' %}"{% if not current_category %} class="active"{% endif %}>Wszystkie</a>
+        {% for category in categories %}
+            <a href="{% url 'events:events-by-category' category.slug %}"{% if current_category == category %} class="active"{% endif %}>{{ category.name }}</a>
+        {% endfor %}
+    </nav>
+
+    <form class="search-form" method="get" action="{% url 'events:event-list' %}">
+        <label class="sr-only" for="event-search">Szukaj po tytule</label>
+        <input
+            id="event-search"
+            type="text"
+            name="q"
+            value="{{ q }}"
+            placeholder="Szukaj po tytule..."
+        >
+        <button type="submit">Szukaj</button>
+    </form>
+
+    {% if q %}
+        <p class="search-summary">Wyniki wyszukiwania dla: <strong>{{ q }}</strong></p>
+    {% endif %}
+
+    {% if events %}
+        <div class="event-grid">
+            {% for event in events %}
+                {% include 'events/includes/event_card.html' %}
+            {% endfor %}
+        </div>
+    {% else %}
+        <p class="empty-state">Brak opublikowanych wydarzeń spełniających wybrane kryteria.</p>
+    {% endif %}
+{% endblock %}
