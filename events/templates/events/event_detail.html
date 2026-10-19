@@ -1,0 +1,38 @@
+{% extends 'events/base.html' %}
+
+{% block title %}{{ event.title }} – EventHub{% endblock %}
+
+{% block content %}
+    <article class="detail-view">
+        <a href="{% url 'events:event-list' %}" class="back-link">&larr; Wróć do listy wydarzeń</a>
+        <h1>{{ event.title }}</h1>
+        <span class="badge">{{ event.category.name }}</span>
+
+        <div class="meta detail-meta">
+            <p><strong>Termin:</strong> {{ event.date|date:"l, d F Y, godz. H:i" }}</p>
+            <p><strong>Lokalizacja:</strong> {{ event.location }}</p>
+            <p><strong>Organizator:</strong> {{ event.organizer.get_full_name|default:event.organizer.username }}</p>
+            <p><strong>Dostępne miejsca:</strong> {{ event.capacity }} osób</p>
+            <p><strong>Koszt udziału:</strong> {% if event.price == 0 %}Bezpłatne{% else %}{{ event.price }} PLN{% endif %}</p>
+        </div>
+
+        <h2>Opis wydarzenia</h2>
+        <p class="event-description">{{ event.description }}</p>
+
+        <section class="reservation-note">
+            <h3>Chcesz wziąć udział?</h3>
+            <p>Rezerwacja biletów przez przeglądarkę będzie dostępna wkrótce za pośrednictwem naszego REST API (Lab 4–9)!</p>
+        </section>
+    </article>
+
+    <section class="related-events">
+        <h2>Podobne wydarzenia</h2>
+        <div class="event-grid">
+            {% for rel_event in related_events %}
+                {% include 'events/includes/event_card.html' with event=rel_event %}
+            {% empty %}
+                <p class="empty-state">Brak innych wydarzeń w tej kategorii.</p>
+            {% endfor %}
+        </div>
+    </section>
+{% endblock %}
