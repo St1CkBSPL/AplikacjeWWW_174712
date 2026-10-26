@@ -37,6 +37,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+
+    # Biblioteki zewnętrzne
+    'rest_framework',
+
+    # Aplikacje lokalne
     'events.apps.EventsConfig',
 ]
 
