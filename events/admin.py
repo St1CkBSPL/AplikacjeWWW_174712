@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Category, Event
+from .models import Category, Tag, Event
 
 
 @admin.register(Category)
@@ -15,6 +15,13 @@ class CategoryAdmin(admin.ModelAdmin):
         return obj.events.count()
 
 
+@admin.register(Tag)
+class TagAdmin(admin.ModelAdmin):
+    list_display = ('name', 'slug')
+    search_fields = ('name',)
+    prepopulated_fields = {'slug': ('name',)}
+
+
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
     list_display = ('title', 'category', 'organizer', 'date', 'price', 'capacity', 'is_published')
@@ -24,10 +31,11 @@ class EventAdmin(admin.ModelAdmin):
     list_editable = ('is_published', 'price')
     date_hierarchy = 'date'
     ordering = ('date',)
+    filter_horizontal = ('tags',)
 
     fieldsets = (
         ("Podstawowe informacje", {
-            'fields': ('title', 'slug', 'category', 'organizer', 'description')
+            'fields': ('title', 'slug', 'category', 'organizer', 'tags', 'description')
         }),
         ("Szczegóły organizacyjne", {
             'fields': ('location', 'date', 'capacity', 'price', 'is_published')
