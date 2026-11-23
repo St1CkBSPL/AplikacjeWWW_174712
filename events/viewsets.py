@@ -4,14 +4,16 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
 
-from .models import Category, Event, Tag
+from .models import Category, Event, Tag, Ticket
 from .serializers import (
     CategorySerializer,
     EventListSerializer,
     EventModelSerializer,
     TagSerializer,
+    TicketSerializer,
 )
 
 
@@ -74,15 +76,20 @@ class EventViewSet(viewsets.ModelViewSet):
         .prefetch_related('tags')
         .all()
     )
+    permission_classes = [IsAuthenticatedOrReadOnly]
 
     def get_serializer_class(self):
         """
         Dla listy wydarzeń oraz akcji zwracających kolekcje używamy lżejszego EventListSerializer.
-        Dla szczegółów (retrieve) oraz zapisu używamy EventModelSerializer.
+        Dla szczegółów (retrieve), zapisu i my_organized używamy EventModelSerializer.
         """
         if self.action in ['list', 'upcoming', 'free_events']:
             return EventListSerializer
         return EventModelSerializer
+
+    def perform_create(self, serializer):
+        """Automatyczne powiązanie tworzonego wydarzenia z zalogowanym użytkownikiem."""
+        serializer.save(organizer=self.request.user)
 
     @action(detail=False, methods=['get'])
     def upcoming(self, request):
@@ -100,6 +107,20 @@ class EventViewSet(viewsets.ModelViewSet):
         """Zwraca wyłącznie opublikowane, bezpłatne wydarzenia."""
         free = self.get_queryset().filter(is_published=True, price=0)
         serializer = self.get_serializer(free, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def my_organized(self, request):
+        """Zwraca wszystkie wydarzenia zalogowanego organizatora (również szkice), od najnowszych."""
+        events = self.get_queryset().filter(organizer=request.user).order_by('-date')
+        is_published_param = request.query_params.get('is_published')
+        if is_published_param is not None:
+            lowered = is_published_param.lower()
+            if lowered == 'true':
+                events = events.filter(is_published=True)
+            elif lowered == 'false':
+                events = events.filter(is_published=False)
+        serializer = self.get_serializer(events, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
@@ -152,7 +173,7 @@ class EventViewSet(viewsets.ModelViewSet):
             title=f"{original.title} (Kopia)",
             slug=slug,
             category=original.category,
-            organizer=original.organizer,
+            organizer=request.user,
             description=original.description,
             location=original.location,
             date=original.date + timedelta(days=7),
@@ -164,3 +185,18 @@ class EventViewSet(viewsets.ModelViewSet):
 
         serializer = EventModelSerializer(new_event)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class TicketViewSet(viewsets.ModelViewSet):
+    """Endpoint biletów bieżącego użytkownika z izolacją danych per użytkownik."""
+
+    serializer_class = TicketSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Ticket.objects.filter(
+            user=self.request.user
+        ).select_related('event', 'user')
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)

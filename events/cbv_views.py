@@ -1,11 +1,19 @@
+from django.contrib.auth.models import User
 from django.db.models import Avg, Count, Max, Min, Q
 from django.utils import timezone
 from rest_framework import generics, status
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Category, Event, Tag
-from .serializers import EventListSerializer, EventModelSerializer
+from .models import Category, Event, OrganizerProfile, Tag
+from .serializers import (
+    ChangePasswordSerializer,
+    CurrentUserSerializer,
+    EventListSerializer,
+    EventModelSerializer,
+    UserRegistrationSerializer,
+)
 
 
 # --- PODEJŚCIE 1: Klasa bazowa APIView ---
@@ -24,7 +32,7 @@ class EventListAPIView(APIView):
     def post(self, request):
         serializer = EventModelSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            serializer.save(organizer=request.user)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -46,6 +54,9 @@ class EventListCreateGenericView(generics.ListCreateAPIView):
         if self.request.method == 'GET':
             return EventListSerializer
         return EventModelSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(organizer=self.request.user)
 
 
 class EventRetrieveUpdateDestroyGenericView(generics.RetrieveUpdateDestroyAPIView):
@@ -89,3 +100,47 @@ class PlatformSummaryAPIView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class UserRegisterView(generics.CreateAPIView):
+    """Publiczny endpoint rejestracji nowych użytkowników."""
+
+    queryset = User.objects.all()
+    serializer_class = UserRegistrationSerializer
+    permission_classes = [AllowAny]
+
+
+class CurrentUserProfileView(generics.RetrieveUpdateAPIView):
+    """Odczyt i edycja danych oraz profilu bieżącego użytkownika."""
+
+    serializer_class = CurrentUserSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self):
+        OrganizerProfile.objects.get_or_create(user=self.request.user)
+        return self.request.user
+
+
+class ChangePasswordView(APIView):
+    """Bezpieczna zmiana hasła uwierzytelnionego użytkownika."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _change_password(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data,
+            context={'request': request},
+        )
+        serializer.is_valid(raise_exception=True)
+        request.user.set_password(serializer.validated_data['new_password'])
+        request.user.save()
+        return Response(
+            {"message": "Hasło zostało pomyślnie zmienione."},
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request):
+        return self._change_password(request)
+
+    def put(self, request):
+        return self._change_password(request)

@@ -1,8 +1,10 @@
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Category, Event, Tag
+from .models import Category, Event, OrganizerProfile, Tag, Ticket
 
 
 class EventSerializer(serializers.Serializer):
@@ -79,9 +81,7 @@ class EventModelSerializer(serializers.ModelSerializer):
     organizer_username = serializers.ReadOnlyField(source='organizer.username')
 
     # 2. Obsługa relacji ManyToMany (Tagi):
-    # - w odpowiedziach GET zwracamy pełne obiekty tagów (id, name, slug)
     tags_details = TagSerializer(source='tags', many=True, read_only=True)
-    # - w żądaniach POST/PUT/PATCH przyjmujemy tablicę identyfikatorów, np. "tag_ids": [1, 2]
     tag_ids = serializers.PrimaryKeyRelatedField(
         many=True,
         queryset=Tag.objects.all(),
@@ -103,7 +103,7 @@ class EventModelSerializer(serializers.ModelSerializer):
             'is_free', 'days_until_event', 'is_published',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'organizer', 'created_at', 'updated_at']
 
     def get_is_free(self, obj) -> bool:
         """Zwraca True, jeśli wydarzenie jest bezpłatne."""
@@ -180,3 +180,156 @@ class EventListSerializer(serializers.ModelSerializer):
         if len(obj.description) > 80:
             return f"{obj.description[:80]}..."
         return obj.description
+
+
+class OrganizerProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrganizerProfile
+        fields = ['company_name', 'bio', 'website', 'is_verified']
+        read_only_fields = ['is_verified']
+
+
+class UserRegistrationSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        validators=[validate_password],
+        style={'input_type': 'password'},
+    )
+    password_confirm = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={'input_type': 'password'},
+    )
+    company_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'email', 'first_name', 'last_name',
+            'password', 'password_confirm', 'company_name',
+        ]
+
+    def validate_email(self, value):
+        if value and User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("Użytkownik z tym adresem e-mail już istnieje.")
+        return value
+
+    def validate(self, attrs):
+        if attrs['password'] != attrs['password_confirm']:
+            raise serializers.ValidationError({"password_confirm": "Podane hasła nie są identyczne."})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.pop('password_confirm')
+        company_name = validated_data.pop('company_name', '')
+
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            email=validated_data.get('email', ''),
+            password=validated_data['password'],
+            first_name=validated_data.get('first_name', ''),
+            last_name=validated_data.get('last_name', ''),
+        )
+        OrganizerProfile.objects.create(user=user, company_name=company_name)
+        return user
+
+
+class CurrentUserSerializer(serializers.ModelSerializer):
+    profile = OrganizerProfileSerializer(required=False)
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'date_joined', 'profile']
+        read_only_fields = ['id', 'username', 'date_joined']
+
+    def validate_email(self, value):
+        if value and User.objects.filter(email__iexact=value).exclude(pk=self.instance.pk).exists():
+            raise serializers.ValidationError("Użytkownik z tym adresem e-mail już istnieje.")
+        return value
+
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop('profile', None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if profile_data is not None:
+            profile, _ = OrganizerProfile.objects.get_or_create(user=instance)
+            for attr, value in profile_data.items():
+                setattr(profile, attr, value)
+            profile.save()
+
+        return instance
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    old_password = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={'input_type': 'password'},
+    )
+    new_password = serializers.CharField(
+        write_only=True,
+        required=True,
+        validators=[validate_password],
+        style={'input_type': 'password'},
+    )
+
+    def validate_old_password(self, value):
+        user = self.context['request'].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Dotychczasowe hasło jest nieprawidłowe.")
+        return value
+
+    def validate(self, attrs):
+        if attrs['old_password'] == attrs['new_password']:
+            raise serializers.ValidationError({
+                "new_password": "Nowe hasło musi różnić się od dotychczasowego."
+            })
+        return attrs
+
+
+class TicketSerializer(serializers.ModelSerializer):
+    event_title = serializers.ReadOnlyField(source='event.title')
+    event_date = serializers.ReadOnlyField(source='event.date')
+    event_location = serializers.ReadOnlyField(source='event.location')
+    user_username = serializers.ReadOnlyField(source='user.username')
+
+    class Meta:
+        model = Ticket
+        fields = [
+            'id', 'ticket_code', 'event', 'event_title',
+            'event_date', 'event_location', 'user_username',
+            'status', 'purchased_at',
+        ]
+        read_only_fields = ['id', 'ticket_code', 'status', 'purchased_at', 'user_username']
+
+    def validate_event(self, event):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            if Ticket.objects.filter(event=event, user=request.user).exists():
+                raise serializers.ValidationError("Posiadasz już bilet na to wydarzenie.")
+        if not event.is_published:
+            raise serializers.ValidationError("Nie można kupić biletu na nieopublikowane wydarzenie.")
+        return event
+
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token['username'] = user.username
+        token['email'] = user.email
+        token['is_staff'] = user.is_staff
+        return token
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        data['user'] = {
+            'id': self.user.id,
+            'username': self.user.username,
+            'email': self.user.email,
+        }
+        return data

@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Category, Tag, Event
+from .models import Category, Event, OrganizerProfile, Tag, Ticket
 
 
 @admin.register(Category)
@@ -41,3 +41,18 @@ class EventAdmin(admin.ModelAdmin):
             'fields': ('location', 'date', 'capacity', 'price', 'is_published')
         }),
     )
+
+
+@admin.register(OrganizerProfile)
+class OrganizerProfileAdmin(admin.ModelAdmin):
+    list_display = ('user', 'company_name', 'website', 'is_verified')
+    list_filter = ('is_verified',)
+    search_fields = ('user__username', 'company_name', 'bio')
+
+
+@admin.register(Ticket)
+class TicketAdmin(admin.ModelAdmin):
+    list_display = ('ticket_code', 'event', 'user', 'status', 'purchased_at')
+    list_filter = ('status', 'purchased_at')
+    search_fields = ('ticket_code', 'event__title', 'user__username')
+    readonly_fields = ('ticket_code', 'purchased_at')
