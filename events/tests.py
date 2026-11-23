@@ -92,7 +92,7 @@ class EventViewsTests(TestCase):
         self.assertEqual(response.status_code, 404)
 
 
-class EventAPITests(APITestCase):
+class EventAPIV1Tests(APITestCase):
     @classmethod
     def setUpTestData(cls):
         cls.organizer = User.objects.create_user(
@@ -114,12 +114,15 @@ class EventAPITests(APITestCase):
         )
         cls.tag_python = Tag.objects.create(name="python", slug="python")
         cls.tag_ai = Tag.objects.create(name="ai", slug="ai")
+        cls.tag_backend = Tag.objects.create(name="backend", slug="backend")
+
         cls.event = cls.create_event(
             "Django Day",
             "django-day",
             cls.category,
             description="Szczegółowy opis konferencji Django Day 2026.",
             tags=[cls.tag_python, cls.tag_ai],
+            days_offset=14,
         )
         cls.paid_event = cls.create_event(
             "Python Workshop",
@@ -128,6 +131,25 @@ class EventAPITests(APITestCase):
             description="Płatne warsztaty z programowania w języku Python.",
             price=Decimal("150.00"),
             tags=[cls.tag_python],
+            days_offset=7,
+        )
+        cls.past_event = cls.create_event(
+            "Past Conference",
+            "past-conference",
+            cls.category,
+            description="Archiwalne wydarzenie, które już się odbyło.",
+            price=Decimal("50.00"),
+            days_offset=-5,
+        )
+        cls.draft_event = cls.create_event(
+            "Draft Event",
+            "draft-event",
+            cls.category,
+            description="Szkic wydarzenia nieopublikowanego publicznie.",
+            price=Decimal("0.00"),
+            tags=[cls.tag_ai],
+            is_published=False,
+            days_offset=20,
         )
 
     @classmethod
@@ -141,6 +163,8 @@ class EventAPITests(APITestCase):
         tags=None,
         location="Olsztyn",
         capacity=100,
+        is_published=True,
+        days_offset=14,
     ):
         event = Event.objects.create(
             title=title,
@@ -149,10 +173,10 @@ class EventAPITests(APITestCase):
             organizer=cls.organizer,
             description=description,
             location=location,
-            date=timezone.now() + timedelta(days=14),
+            date=timezone.now() + timedelta(days=days_offset),
             capacity=capacity,
             price=price,
-            is_published=True,
+            is_published=is_published,
         )
         if tags:
             event.tags.set(tags)
@@ -175,113 +199,132 @@ class EventAPITests(APITestCase):
         payload.update(overrides)
         return payload
 
-    def test_event_list_uses_list_serializer_fields(self):
-        response = self.client.get(reverse("events:api-event-list-create"))
+    def test_api_root_exposes_router_endpoints(self):
+        response = self.client.get("/events/api/v1/")
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertGreaterEqual(len(response.data), 2)
-        item = next(event for event in response.data if event["slug"] == self.event.slug)
+        self.assertIn("categories", response.data)
+        self.assertIn("events", response.data)
+        self.assertIn("tags", response.data)
+
+    def test_generic_cbv_endpoints_work(self):
+        list_resp = self.client.get(reverse("events:generic-event-list"))
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK)
+        self.assertIn("short_description", list_resp.data[0])
+
+        detail_resp = self.client.get(
+            reverse("events:generic-event-detail", kwargs={"pk": self.event.pk})
+        )
+        self.assertEqual(detail_resp.status_code, status.HTTP_200_OK)
+        self.assertIn("tags_details", detail_resp.data)
+
+    def test_event_viewset_list_and_retrieve_use_dynamic_serializers(self):
+        list_resp = self.client.get(reverse("events:v1:event-list"))
+        self.assertEqual(list_resp.status_code, status.HTTP_200_OK)
+        item = next(e for e in list_resp.data if e["slug"] == self.event.slug)
         self.assertEqual(item["short_description"], self.event.description)
         self.assertEqual(item["tags_count"], 2)
-        self.assertTrue(item["is_free"])
         self.assertNotIn("description", item)
-        self.assertNotIn("updated_at", item)
 
-    def test_event_list_truncates_long_description(self):
-        long_description = "A" * 90
-        self.event.description = long_description
-        self.event.save(update_fields=["description"])
-
-        response = self.client.get(reverse("events:api-event-list-create"))
-        item = next(event for event in response.data if event["slug"] == self.event.slug)
-
-        self.assertEqual(item["short_description"], f"{'A' * 80}...")
-
-    def test_event_list_filters_by_tag_and_free_flag(self):
-        by_tag = self.client.get(
-            reverse("events:api-event-list-create"), {"tag": "ai"}
+        detail_resp = self.client.get(
+            reverse("events:v1:event-detail", kwargs={"pk": self.event.pk})
         )
-        free_only = self.client.get(
-            reverse("events:api-event-list-create"), {"free": "TRUE"}
-        )
+        self.assertEqual(detail_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(detail_resp.data["description"], self.event.description)
+        self.assertEqual(len(detail_resp.data["tags_details"]), 2)
+        self.assertIn("days_until_event", detail_resp.data)
 
-        self.assertEqual(len(by_tag.data), 1)
-        self.assertEqual(by_tag.data[0]["slug"], self.event.slug)
-        self.assertEqual(len(free_only.data), 1)
-        self.assertEqual(free_only.data[0]["slug"], self.event.slug)
-
-    def test_event_create_returns_nested_tags_and_computed_fields(self):
-        response = self.client.post(
-            reverse("events:api-event-list-create"),
+    def test_event_viewset_create_and_validations(self):
+        created = self.client.post(
+            reverse("events:v1:event-list"),
             self.event_payload(tag_ids=[self.tag_python.id, self.tag_ai.id]),
             format="json",
         )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(created.data["tags_details"]), 2)
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(len(response.data["tags_details"]), 2)
-        self.assertTrue(response.data["is_free"])
-        self.assertIn("days_until_event", response.data)
-        self.assertGreaterEqual(response.data["days_until_event"], 29)
-
-    def test_event_patch_updates_price(self):
-        response = self.client.patch(
-            reverse("events:api-event-detail", kwargs={"pk": self.event.pk}),
-            {"price": "99.00"},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["price"], "99.00")
-        self.assertFalse(response.data["is_free"])
-
-    def test_online_event_requires_url_location(self):
-        response = self.client.post(
-            reverse("events:api-event-list-create"),
+        bad_online = self.client.post(
+            reverse("events:v1:event-list"),
             self.event_payload(
                 title="Webinar Python online",
-                slug="webinar-python-online",
+                slug="webinar-online-bad",
                 location="Olsztyn",
             ),
             format="json",
         )
+        self.assertEqual(bad_online.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("location", bad_online.data)
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("location", response.data)
-
-    def test_online_event_accepts_https_location(self):
-        response = self.client.post(
-            reverse("events:api-event-list-create"),
-            self.event_payload(
-                title="Webinar Python online",
-                slug="webinar-python-online",
-                location="https://meet.example.com/python",
-            ),
+        bad_capacity = self.client.post(
+            reverse("events:v1:event-list"),
+            self.event_payload(slug="over-capacity", capacity=1001),
             format="json",
         )
+        self.assertEqual(bad_capacity.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("capacity", bad_capacity.data)
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data["location"], "https://meet.example.com/python")
+    def test_upcoming_and_free_events_actions(self):
+        upcoming = self.client.get(reverse("events:v1:event-upcoming"))
+        self.assertEqual(upcoming.status_code, status.HTTP_200_OK)
+        upcoming_slugs = [e["slug"] for e in upcoming.data]
+        self.assertEqual(upcoming_slugs, [self.paid_event.slug, self.event.slug])
+        self.assertIn("short_description", upcoming.data[0])
 
-    def test_stationary_event_rejects_capacity_over_limit(self):
-        response = self.client.post(
-            reverse("events:api-event-list-create"),
-            self.event_payload(slug="duza-sala", capacity=1001),
-            format="json",
-        )
+        free = self.client.get(reverse("events:v1:event-free-events"))
+        self.assertEqual(free.status_code, status.HTTP_200_OK)
+        free_slugs = [e["slug"] for e in free.data]
+        self.assertEqual(free_slugs, [self.event.slug])
+        self.assertIn("short_description", free.data[0])
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("capacity", response.data)
+    def test_publish_toggle_action(self):
+        url = reverse("events:v1:event-publish-toggle", kwargs={"pk": self.event.pk})
+        resp = self.client.post(url)
 
-    def test_category_crud_and_protected_delete(self):
-        created = self.client.post(
-            reverse("events:api-category-list"),
-            {"name": "Hackathony", "slug": "hackathony", "description": "Maratony programowania"},
-            format="json",
-        )
-        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(resp.data["is_published"])
+        self.event.refresh_from_db()
+        self.assertFalse(self.event.is_published)
 
+    def test_manage_tags_action_add_remove_and_errors(self):
+        url = reverse("events:v1:event-manage-tags", kwargs={"pk": self.event.pk})
+
+        missing = self.client.post(url, {}, format="json")
+        self.assertEqual(missing.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(missing.data["error"], "Pole 'tag_id' jest wymagane.")
+
+        not_found = self.client.post(url, {"tag_id": 999999}, format="json")
+        self.assertEqual(not_found.status_code, status.HTTP_404_NOT_FOUND)
+
+        added = self.client.post(url, {"tag_id": self.tag_backend.id}, format="json")
+        self.assertEqual(added.status_code, status.HTTP_200_OK)
+        self.assertIn("backend", [tag["name"] for tag in added.data])
+
+        removed = self.client.delete(url, {"tag_id": self.tag_backend.id}, format="json")
+        self.assertEqual(removed.status_code, status.HTTP_200_OK)
+        self.assertNotIn("backend", [tag["name"] for tag in removed.data])
+
+    def test_duplicate_action_creates_draft_copy_for_next_week(self):
+        url = reverse("events:v1:event-duplicate", kwargs={"pk": self.event.pk})
+        resp = self.client.post(url)
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data["title"], f"{self.event.title} (Kopia)")
+        self.assertTrue(resp.data["slug"].startswith(f"{self.event.slug}-kopia-"))
+        self.assertFalse(resp.data["is_published"])
+        self.assertEqual(len(resp.data["tags_details"]), 2)
+
+        copy = Event.objects.get(pk=resp.data["id"])
+        self.assertEqual(copy.date, self.event.date + timedelta(days=7))
+        self.assertEqual(copy.category, self.event.category)
+        self.assertEqual(copy.organizer, self.event.organizer)
+        self.assertEqual(copy.description, self.event.description)
+        self.assertEqual(copy.location, self.event.location)
+        self.assertEqual(copy.capacity, self.event.capacity)
+        self.assertEqual(copy.price, self.event.price)
+
+    def test_category_viewset_crud_delete_guard_and_events_action(self):
         blocked = self.client.delete(
-            reverse("events:api-category-detail", kwargs={"pk": self.category.pk})
+            reverse("events:v1:category-detail", kwargs={"pk": self.category.pk})
         )
         self.assertEqual(blocked.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(
@@ -290,19 +333,52 @@ class EventAPITests(APITestCase):
         )
 
         removed = self.client.delete(
-            reverse("events:api-category-detail", kwargs={"pk": self.empty_category.pk})
+            reverse("events:v1:category-detail", kwargs={"pk": self.empty_category.pk})
         )
         self.assertEqual(removed.status_code, status.HTTP_204_NO_CONTENT)
 
-    def test_tag_list_is_alphabetical_and_create_works(self):
-        listing = self.client.get(reverse("events:api-tag-list-create"))
-        names = [tag["name"] for tag in listing.data]
-        self.assertEqual(names, sorted(names))
+        cat_events = self.client.get(
+            reverse("events:v1:category-events", kwargs={"pk": self.category.pk})
+        )
+        self.assertEqual(cat_events.status_code, status.HTTP_200_OK)
+        slugs = {e["slug"] for e in cat_events.data}
+        self.assertEqual(slugs, {self.event.slug, self.past_event.slug})
 
+    def test_tag_viewset_crud_and_events_action(self):
         created = self.client.post(
-            reverse("events:api-tag-list-create"),
-            {"name": "backend", "slug": "backend"},
+            reverse("events:v1:tag-list"),
+            {"name": "devops", "slug": "devops"},
             format="json",
         )
         self.assertEqual(created.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(created.data["name"], "backend")
+
+        tag_events = self.client.get(
+            reverse("events:v1:tag-events", kwargs={"pk": self.tag_ai.pk})
+        )
+        self.assertEqual(tag_events.status_code, status.HTTP_200_OK)
+        self.assertEqual([e["slug"] for e in tag_events.data], [self.event.slug])
+        self.assertIn("short_description", tag_events.data[0])
+
+    def test_platform_summary_api_view(self):
+        response = self.client.get(reverse("events:api-platform-summary"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data,
+            {
+                "total_published_events": 3,
+                "upcoming_events_count": 2,
+                "free_events_count": 1,
+                "categories_count": 3,
+                "tags_count": 3,
+                "average_ticket_price": 66.67,
+            },
+        )
+
+    def test_platform_summary_handles_no_published_events(self):
+        Event.objects.update(is_published=False)
+        response = self.client.get(reverse("events:api-platform-summary"))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["total_published_events"], 0)
+        self.assertEqual(response.data["average_ticket_price"], 0.00)

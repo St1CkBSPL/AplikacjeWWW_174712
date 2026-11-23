@@ -1,19 +1,27 @@
-from django.urls import path
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
 
-from . import api_views, views
+from . import cbv_views, views
+from .viewsets import CategoryViewSet, EventViewSet, TagViewSet
 
 app_name = 'events'
 
+router = DefaultRouter()
+router.register(r'categories', CategoryViewSet, basename='category')
+router.register(r'events', EventViewSet, basename='event')
+router.register(r'tags', TagViewSet, basename='tag')
+
 urlpatterns = [
-    # Widoki HTML (MVT)
+    # 1. Tradycyjne widoki HTML (MVT) z Lab 3
     path('', views.event_list, name='event-list'),
     path('event/<slug:slug>/', views.event_detail, name='event-detail'),
     path('category/<slug:category_slug>/', views.events_by_category, name='events-by-category'),
 
-    # Endpointy REST API (DRF - Widoki funkcyjne)
-    path('api/events/', api_views.event_list_create_api, name='api-event-list-create'),
-    path('api/events/<int:pk>/', api_views.event_detail_api, name='api-event-detail'),
-    path('api/categories/', api_views.category_list_api, name='api-category-list'),
-    path('api/categories/<int:pk>/', api_views.category_detail_api, name='api-category-detail'),
-    path('api/tags/', api_views.tag_list_create_api, name='api-tag-list-create'),
+    # 2. Endpointy widoków generycznych CBV (porównawczo)
+    path('api/cbv/events/', cbv_views.EventListCreateGenericView.as_view(), name='generic-event-list'),
+    path('api/cbv/events/<int:pk>/', cbv_views.EventRetrieveUpdateDestroyGenericView.as_view(), name='generic-event-detail'),
+
+    # 3. Profesjonalne REST API oparte na ViewSets i Routerze osadzone pod prefiksem wersji v1
+    path('api/v1/summary/', cbv_views.PlatformSummaryAPIView.as_view(), name='api-platform-summary'),
+    path('api/v1/', include((router.urls, 'v1'))),
 ]
